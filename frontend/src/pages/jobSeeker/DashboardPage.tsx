@@ -93,11 +93,53 @@ function sparklinePoints(values: number[]) {
 export function JobSeekerDashboardPage() {
   const { user } = useAuth();
 
+  type JobRow = {
+    id: string;
+    recruiter_id: string;
+    title: string;
+    company_name: string;
+    location: string;
+    role: string;
+    required_skills: string[] | null;
+    job_type: Job["jobType"];
+    min_experience_years: number;
+    description: string;
+    open_to_freshers: boolean;
+    review_status?: Job["reviewStatus"];
+    admin_feedback?: string | null;
+    reviewed_at?: string | null;
+    application_deadline?: string | null;
+    created_at: string;
+  };
+
+  const normalizeJobRow = (value: JobRow | JobRow[] | null | undefined): JobRow | null => {
+    if (!value) return null;
+    return Array.isArray(value) ? (value[0] ?? null) : value;
+  };
+
+  const mapJobRow = (row: JobRow): Job => ({
+    id: row.id,
+    recruiterId: row.recruiter_id,
+    title: row.title,
+    companyName: row.company_name,
+    location: row.location,
+    role: row.role,
+    requiredSkills: row.required_skills ?? [],
+    jobType: row.job_type,
+    minExperienceYears: row.min_experience_years,
+    description: row.description,
+    openToFreshers: row.open_to_freshers,
+    reviewStatus: row.review_status,
+    adminFeedback: row.admin_feedback,
+    reviewedAt: row.reviewed_at,
+    applicationDeadline: row.application_deadline,
+    createdAt: row.created_at,
+  });
+
   const [profile, setProfile] = useState<JobSeekerProfile | null>(null);
   const [resumes, setResumes] = useState<Resume[]>([]);
   const [generatedResumes, setGeneratedResumes] = useState<GeneratedResume[]>([]);
   const [applications, setApplications] = useState<ApplicationWithJob[]>([]);
-  const [savedJobs, setSavedJobs] = useState<Array<{ job?: Job; jobId?: Job | string }>>([]);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [applicationsCount, setApplicationsCount] = useState(0);
   const [savedJobsCount, setSavedJobsCount] = useState(0);
@@ -189,7 +231,6 @@ export function JobSeekerDashboardPage() {
           setResumes([]);
           setGeneratedResumes([]);
           setApplications([]);
-          setSavedJobs([]);
           setNotifications([]);
           setApplicationsCount(0);
           setSavedJobsCount(0);
@@ -231,58 +272,27 @@ export function JobSeekerDashboardPage() {
           tags: row.tags ?? [],
         }));
 
-        const mappedApplications: ApplicationWithJob[] = (applicationsResult.data ?? [])
-          .filter((row) => Boolean(row.job))
-          .map((row) => ({
+        const mappedApplications: ApplicationWithJob[] = (applicationsResult.data ?? []).flatMap((row) => {
+          const jobRow = normalizeJobRow(row.job as JobRow | JobRow[] | null | undefined);
+          if (!jobRow) return [];
+
+          return [{
             id: row.id,
             status: row.status,
             interviewAt: row.interview_at,
             createdAt: row.created_at,
-            job: {
-              id: row.job.id,
-              recruiterId: row.job.recruiter_id,
-              title: row.job.title,
-              companyName: row.job.company_name,
-              location: row.job.location,
-              role: row.job.role,
-              requiredSkills: row.job.required_skills ?? [],
-              jobType: row.job.job_type,
-              minExperienceYears: row.job.min_experience_years,
-              description: row.job.description,
-              openToFreshers: row.job.open_to_freshers,
-              reviewStatus: row.job.review_status,
-              adminFeedback: row.job.admin_feedback,
-              reviewedAt: row.job.reviewed_at,
-              applicationDeadline: row.job.application_deadline,
-              createdAt: row.job.created_at,
-            },
-          }));
+            job: mapJobRow(jobRow),
+          }];
+        });
 
-        const mappedSavedJobs: Array<{ job?: Job; jobId?: Job | string }> = (savedResult.data ?? [])
-          .map((row) => {
-            if (!row.job) {
+        const mappedSavedJobs: Array<{ job?: Job; jobId?: Job | string }> = (savedResult.data ?? []).map((row) => {
+            const jobRow = normalizeJobRow(row.job as JobRow | JobRow[] | null | undefined);
+            if (!jobRow) {
               return { jobId: row.job_id as string };
             }
 
             return {
-              job: {
-                id: row.job.id,
-                recruiterId: row.job.recruiter_id,
-                title: row.job.title,
-                companyName: row.job.company_name,
-                location: row.job.location,
-                role: row.job.role,
-                requiredSkills: row.job.required_skills ?? [],
-                jobType: row.job.job_type,
-                minExperienceYears: row.job.min_experience_years,
-                description: row.job.description,
-                openToFreshers: row.job.open_to_freshers,
-                reviewStatus: row.job.review_status,
-                adminFeedback: row.job.admin_feedback,
-                reviewedAt: row.job.reviewed_at,
-                applicationDeadline: row.job.application_deadline,
-                createdAt: row.job.created_at,
-              },
+              job: mapJobRow(jobRow),
             };
           });
 
@@ -298,7 +308,6 @@ export function JobSeekerDashboardPage() {
         setResumes(mappedResumes);
         setGeneratedResumes(mappedGenerated);
         setApplications(mappedApplications);
-        setSavedJobs(mappedSavedJobs);
         setNotifications(mappedNotifications);
         setApplicationsCount(applicationsCountResult.count ?? mappedApplications.length);
         setSavedJobsCount(savedCountResult.count ?? mappedSavedJobs.length);
