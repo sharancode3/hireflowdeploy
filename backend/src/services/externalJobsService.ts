@@ -661,15 +661,14 @@ export async function syncExternalJobsNow(): Promise<{ totalUpserted: number; st
     const supabase = getSupabaseAdmin();
     let upsertResult = await supabase
       .from("external_jobs")
-      .upsert(dedupedJobs, { onConflict: "dedupe_key", ignoreDuplicates: false });
+      .upsert(dedupedJobs, { onConflict: "dedupe_key", ignoreDuplicates: true });
 
+    // If dedupe key conflicts are ignored, we still handle source/external_id as fallback to remain resilient.
     const upsertError = upsertResult.error as { code?: string; message?: string; details?: string | null } | null;
     if (upsertError?.code === "23505" && String(upsertError.message || "").includes("uq_external_jobs_source_external_id")) {
-      // If provider URLs change, dedupe key can differ while external_id remains stable.
-      // Retry using source+external_id as conflict target to keep sync resilient.
       upsertResult = await supabase
         .from("external_jobs")
-        .upsert(dedupedJobs, { onConflict: "source,external_id", ignoreDuplicates: false });
+        .upsert(dedupedJobs, { onConflict: "source,external_id", ignoreDuplicates: true });
     }
 
     const upsertErrorCode = (upsertResult.error as { code?: string } | null)?.code;

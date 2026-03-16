@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { apiFormData, apiJson, ApiError } from "../../api/client";
 import { useAuth } from "../../auth/AuthContext";
+import { isProfileBuilderEnabled, fetchProfileFromSupabase, syncProfileToSupabase, addResumeUrl, listResumes, getSkillSuggestions } from "../../services/profileBuilderSupabase";
 import type {
   AchievementItem,
   CertificationItem,
@@ -310,41 +311,67 @@ export function JobSeekerProfilePage() {
   async function load() {
     if (!token || !user) return;
 
-    let resolvedProfile: JobSeekerProfile;
-    try {
-      const p = await apiJson<{ profile: JobSeekerProfile }>("/job-seeker/profile", { token });
-      resolvedProfile = p.profile;
-      setLocalOnlyMode(false);
-      lastSavedSnapshot.current = JSON.stringify(buildProfilePatch(p.profile));
-    } catch (e) {
-      if (!isOptionalEndpointError(e)) throw e;
-      resolvedProfile = loadLocalDraft() ?? fallbackProfile();
-      setLocalOnlyMode(true);
+    let resolvedProfile: JobSeekerProfile | null = null;
+
+    if (isProfileBuilderEnabled()) {
+      try {
+        const providerProfile = await fetchProfileFromSupabase(user.id);
+        if (providerProfile) {
+          resolvedProfile = providerProfile;
+          setLocalOnlyMode(false);
+          lastSavedSnapshot.current = JSON.stringify(buildProfilePatch(providerProfile));
+        }
+      } catch (error) {
+        // continue to existing API fallback if Supabase table is not ready
+        console.warn("Supabase profile load failed", error);
+      }
     }
 
-    const [r, g] = await Promise.all([
-      (async () => {
+    if (!resolvedProfile) {
+      try {
+        const p = await apiJson<{ profile: JobSeekerProfile }>("/job-seeker/profile", { token });
+        resolvedProfile = p.profile;
+        setLocalOnlyMode(false);
+        lastSavedSnapshot.current = JSON.stringify(buildProfilePatch(p.profile));
+      } catch (e) {
+        if (!isOptionalEndpointError(e)) throw e;
+        resolvedProfile = loadLocalDraft() ?? fallbackProfile();
+        setLocalOnlyMode(true);
+      }
+    }
+
+    let resumesData: Resume[] = [];
+    if (isProfileBuilderEnabled()) {
+      try {
+        resumesData = await listResumes(user.id);
+      } catch (error) {
+        console.warn("Failed to load resumes from Supabase", error);
+      }
+    } else {
+      const r = await (async () => {
         try {
           return await apiJson<{ resumes: Resume[] }>("/job-seeker/resume", { token });
         } catch (e) {
           if (isOptionalEndpointError(e)) return { resumes: [] as Resume[] };
           throw e;
         }
-      })(),
-      (async () => {
-        try {
-          return await apiJson<{ generatedResumes: GeneratedResume[] }>("/job-seeker/generated-resumes", { token });
-        } catch (e) {
-          if (isOptionalEndpointError(e)) return { generatedResumes: [] as GeneratedResume[] };
-          throw e;
-        }
-      })(),
-    ]);
+      })();
+      resumesData = r.resumes;
+    }
+
+    const g = await (async () => {
+      try {
+        return await apiJson<{ generatedResumes: GeneratedResume[] }>("/job-seeker/generated-resumes", { token });
+      } catch (e) {
+        if (isOptionalEndpointError(e)) return { generatedResumes: [] as GeneratedResume[] };
+        throw e;
+      }
+    })();
 
     setProfile(resolvedProfile);
     const parsedPhone = splitPhoneWithCode(resolvedProfile.phone, "+91");
     setPhoneCountryCode(parsedPhone.countryCode);
-    setResumes(r.resumes);
+    setResumes(resumesData);
     setGeneratedResumes(g.generatedResumes);
   }
 
@@ -376,6 +403,16 @@ export function JobSeekerProfilePage() {
       saveLocalDraft(nextProfile);
       setProfile(nextProfile);
       lastSavedSnapshot.current = JSON.stringify(buildProfilePatch(nextProfile));
+
+      if (isProfileBuilderEnabled() && user?.id) {
+        try {
+          await syncProfileToSupabase(user.id, nextProfile);
+          console.info("Local-only mode: synced to Supabase");
+        } catch (syncError) {
+          console.warn("Local-only mode: Supabase sync failed", syncError);
+        }
+      }
+
       setSaveState("saved");
       window.setTimeout(() => setSaveState("idle"), 3000);
       return;
@@ -391,6 +428,18 @@ export function JobSeekerProfilePage() {
       const parsedPhone = splitPhoneWithCode(updated.profile.phone, "+91");
       setPhoneCountryCode(parsedPhone.countryCode);
       lastSavedSnapshot.current = JSON.stringify(buildProfilePatch(updated.profile));
+
+      if (isProfileBuilderEnabled() && user?.id) {
+        try {
+          await syncProfileToSupabase(user.id, updated.profile);
+          console.info("Synced profile to Supabase");
+        } catch (syncError) {
+          console.warn("Supabase sync failed", syncError);
+          const message = syncError instanceof Error ? syncError.message : String(syncError);
+          setError(`Supabase sync failed: ${message}`);
+        }
+      }
+
       setSaveState("saved");
       window.setTimeout(() => setSaveState("idle"), 3000);
     } catch (e) {
@@ -409,6 +458,17 @@ export function JobSeekerProfilePage() {
     }
   }
 
+  async function persistBasicsToSupabase() {
+    if (!isProfileBuilderEnabled() || !user || !profile) return;
+    try {
+      await syncProfileToSupabase(user.id, profile);
+      console.info("Basics persisted to Supabase.");
+    } catch (err) {
+      console.error("Basics persistence failed", err);
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   function scheduleSave(nextProfile: JobSeekerProfile) {
     const snapshot = JSON.stringify(buildProfilePatch(nextProfile));
     if (snapshot === lastSavedSnapshot.current) {
@@ -424,10 +484,18 @@ export function JobSeekerProfilePage() {
   }
 
   async function uploadResume(file: File) {
-    if (!token) return;
+    if (!token || !user) return;
     const form = new FormData();
     form.append("resume", file);
-    await apiFormData("/job-seeker/resume", form, token);
+    const apiResponse = await apiFormData("/job-seeker/resume", form, token);
+
+    if (isProfileBuilderEnabled()) {
+      const resumeUrl = (apiResponse as any)?.resumeUrl || null;
+      if (resumeUrl) {
+        await addResumeUrl(user.id, resumeUrl);
+      }
+    }
+
     await load();
   }
 
@@ -540,12 +608,23 @@ export function JobSeekerProfilePage() {
     setStep(steps[stepIndex - 1]!.key);
   }
 
-  function next() {
+  async function next() {
     if (!stepDone[step]) {
       setError(`Complete the ${steps[stepIndex]?.label.toLowerCase()} step before moving forward.`);
       return;
     }
     if (!canNext) return;
+
+    if (step === "BASICS" && profile) {
+      try {
+        await saveNow(profile);
+        await persistBasicsToSupabase();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to save basics before moving.");
+        return;
+      }
+    }
+
     setError(null);
     setStep(steps[stepIndex + 1]!.key);
   }
@@ -564,6 +643,27 @@ export function JobSeekerProfilePage() {
             {saveState === "saved" ? <span className="h-1.5 w-1.5 rounded-full bg-[#22C55E] animate-[pulse-check_1.5s_ease-in-out_infinite]" /> : null}
             {saveLabel}
           </div>
+        ) : null}
+        {isProfileBuilderEnabled() && profile ? (
+          <button
+            type="button"
+            className="btn btn-xs"
+            onClick={async () => {
+              if (!user?.id) {
+                alert("No user id.");
+                return;
+              }
+              try {
+                await syncProfileToSupabase(user.id, profile);
+                alert("Supabase debug sync successful. Check tables basics/skills/etc.");
+              } catch (err) {
+                alert(`Supabase debug sync failed: ${err instanceof Error ? err.message : String(err)}`);
+                console.error(err);
+              }
+            }}
+          >
+            Debug sync to Supabase
+          </button>
         ) : null}
       </Card>
 
@@ -874,6 +974,33 @@ export function JobSeekerProfilePage() {
                     scheduleSave(next);
                   }}
                 />
+
+                {getSkillSuggestions(profile.desiredRole ?? "").length > 0 ? (
+                  <div className="card" style={{ padding: 12 }}>
+                    <div className="muted" style={{ fontSize: 13, marginBottom: 8 }}>
+                      Suggested skills for <strong>{profile.desiredRole}</strong>:
+                    </div>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      {getSkillSuggestions(profile.desiredRole ?? "").map((suggestion) => (
+                        <button
+                          key={suggestion}
+                          type="button"
+                          className="btn bg-surface-active text-xs"
+                          onClick={() => {
+                            const nextSkills = addUniqueCaseInsensitive(profile.skills, suggestion);
+                            const nextLevels = { ...(profile.skillLevels ?? {}) };
+                            if (!nextLevels[suggestion]) nextLevels[suggestion] = 3;
+                            const next = { ...profile, skills: nextSkills, skillLevels: nextLevels };
+                            setProfile(next);
+                            scheduleSave(next);
+                          }}
+                        >
+                          {suggestion}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
 
                 <div className="muted" style={{ fontSize: 13 }}>
                   Add at least 3 technical skills to proceed. Skills are tag-based only.
