@@ -1,0 +1,36 @@
+services:
+  - type: web
+    name: hireflow-backend
+    runtime: node
+    rootDir: backend
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start
+    plan: free
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: PORT
+        value: 4000
+      - key: CORS_ORIGIN
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: ADMIN_EMAILS
+        value: Sharan18x@gmail.com
+      - key: EMAIL_MODE
+        value: log
+      - key: EMAIL_FROM
+        value: no-reply@hireflow.local
+      - key: EXTERNAL_JOBS_SYNC_INTERVAL_MINUTES
+        value: 60
+      - key: EXTERNAL_JOBS_POSTED_WINDOW_DAYS
+        value: 14
+      - key: EXTERNAL_JOBS_SYNC_KEY
+        sync: false
+      - key: ADZUNA_APP_ID
+        sync: false
+      - key: ADZUNA_APP_KEY
+        sync: false

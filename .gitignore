@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+backend/node_modules/
+frontend/node_modules/
+
+# Build outputs
+backend/dist/
+frontend/dist/
+frontend/dist-ssr/
+
+# Environment files
+.env
+.env.*
+.env.local
+!.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+
+# Uploads (user-generated)
+backend/uploads/resumes/*
+!backend/uploads/resumes/.gitkeep
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# VS Code (keep shared tasks/settings)
+.vscode/*
+!.vscode/tasks.json
+!.vscode/extensions.json

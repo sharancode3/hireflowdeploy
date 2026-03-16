@@ -1,0 +1,20 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Hireflow: Start (Windows)",
+      "type": "shell",
+      "command": "cmd",
+      "args": [
+        "/c",
+        "start-windows.bat",
+        "--auto"
+      ],
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    }
+  ]
+}
