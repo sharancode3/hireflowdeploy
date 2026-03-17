@@ -245,6 +245,7 @@ externalJobsRouter.post("/external-jobs/sync", async (req, res, next) => {
     if (!isSupabaseConfigured()) {
       return res.status(503).json({ message: "Supabase is not configured" });
     }
+    
 
     const authHeader = String(req.header("x-sync-key") || "");
     const expected = String(process.env.EXTERNAL_JOBS_SYNC_KEY || "");

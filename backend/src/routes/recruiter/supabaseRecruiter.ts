@@ -5,12 +5,14 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import multer from "multer";
 import { z } from "zod";
-import type { AuthenticatedRequest } from "../../middleware/auth";
+import { requireAuth, type AuthenticatedRequest } from "../../middleware/auth";
 import { HttpError } from "../../utils/httpError";
 import { getSupabaseAdmin, isSupabaseConfigured } from "../../supabase";
 import { sendResumeShareEmail } from "../../utils/emailAutomation";
 
 export const recruiterSupabaseRouter = Router();
+
+recruiterSupabaseRouter.use(["/job-seeker", "/recruiter", "/notifications", "/files", "/jobs"], requireAuth);
 
 const resumesUploadDir = path.resolve(process.cwd(), "uploads", "resumes");
 const resumeUpload = multer({

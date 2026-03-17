@@ -6,7 +6,6 @@ import helmet from "helmet";
 import { env } from "./env";
 import { notFound } from "./middleware/notFound";
 import { errorHandler } from "./middleware/errorHandler";
-import { requireAuth } from "./middleware/auth";
 
 import { healthRouter } from "./routes/health";
 import { externalJobsRouter } from "./routes/admin/externalJobsPublic";
@@ -40,7 +39,7 @@ async function bootstrap() {
 
   app.use(healthRouter);
   app.use(externalJobsRouter);
-  app.use(requireAuth, recruiterSupabaseRouter);
+  app.use(recruiterSupabaseRouter);
 
   startExternalJobsScheduler();
 
