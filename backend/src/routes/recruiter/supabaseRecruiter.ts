@@ -1,11 +1,160 @@
 import { Router } from "express";
 import crypto from "node:crypto";
+import fs from "node:fs";
+import fsp from "node:fs/promises";
+import path from "node:path";
+import multer from "multer";
 import { z } from "zod";
 import type { AuthenticatedRequest } from "../../middleware/auth";
 import { HttpError } from "../../utils/httpError";
 import { getSupabaseAdmin, isSupabaseConfigured } from "../../supabase";
 
 export const recruiterSupabaseRouter = Router();
+
+const resumesUploadDir = path.resolve(process.cwd(), "uploads", "resumes");
+const resumeUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => {
+      fs.mkdirSync(resumesUploadDir, { recursive: true });
+      cb(null, resumesUploadDir);
+    },
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname || "").toLowerCase();
+      cb(null, `${crypto.randomUUID()}${ext}`);
+    },
+  }),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const allowedExt = new Set([".pdf", ".doc", ".docx"]);
+    const ext = path.extname(file.originalname || "").toLowerCase();
+    if (!allowedExt.has(ext)) return cb(new HttpError(400, "Only PDF/DOC/DOCX files are allowed"));
+    cb(null, true);
+  },
+});
+
+// Types
+type ExperienceItem = {
+  id: string;
+  company: string;
+  title: string;
+  location: string | null;
+  startDate: string; // ISO date
+  endDate: string | null; // ISO date
+  summary: string;
+};
+
+type ProjectItem = {
+  id: string;
+  name: string;
+  link: string | null;
+  summary: string;
+  skills: string[];
+};
+
+type EducationItem = {
+  id: string;
+  level?: "SCHOOL" | "DIPLOMA" | "BACHELOR" | "MASTER" | "PHD" | "OTHER";
+  institution: string;
+  degree: string;
+  fieldOfStudy: string;
+  awardingBody?: string | null;
+  startYear: number;
+  endYear: number | null;
+  grade: string | null;
+};
+
+type CertificationItem = {
+  id: string;
+  name: string;
+  issuer: string;
+  issuedOn: string;
+  expiresOn: string | null;
+  credentialUrl: string | null;
+};
+
+type AchievementItem = {
+  id: string;
+  title: string;
+  description: string;
+  date: string | null;
+};
+
+function toUuidOrNew(value: unknown): string {
+  const parsed = z.string().uuid().safeParse(value);
+  return parsed.success ? parsed.data : crypto.randomUUID();
+}
+
+function normalizeExperienceItems(items: unknown[]): ExperienceItem[] {
+  return items.map((item: any) => ({
+    id: toUuidOrNew(item?.id),
+    company: typeof item?.company === "string" ? item.company.trim() : "",
+    title: typeof item?.title === "string" ? item.title.trim() : "",
+    location: typeof item?.location === "string" ? item.location.trim() || null : null,
+    startDate: typeof item?.startDate === "string" ? item.startDate : "",
+    endDate: typeof item?.endDate === "string" ? item.endDate : null,
+    summary: typeof item?.summary === "string" ? item.summary.trim() : "",
+  }));
+}
+
+function normalizeProjectItems(items: unknown[]): ProjectItem[] {
+  return items.map((item: any) => ({
+    id: toUuidOrNew(item?.id),
+    name: typeof item?.name === "string" ? item.name.trim() : "",
+    link: typeof item?.link === "string" ? item.link.trim() || null : null,
+    summary: typeof item?.summary === "string" ? item.summary.trim() : "",
+    skills: Array.isArray(item?.skills)
+      ? item.skills
+        .filter((skill: unknown): skill is string => typeof skill === "string")
+        .map((skill: string) => skill.trim())
+        .filter(Boolean)
+      : [],
+  }));
+}
+
+function normalizeEducationItems(items: unknown[]): EducationItem[] {
+  const currentYear = new Date().getFullYear();
+  return items.map((item: any) => {
+    const parsedLevel = z.enum(["SCHOOL", "DIPLOMA", "BACHELOR", "MASTER", "PHD", "OTHER"]).safeParse(item?.level);
+    const startYearNum = Number(item?.startYear);
+    const endYearNum = item?.endYear === null || item?.endYear === undefined || item?.endYear === ""
+      ? null
+      : Number(item?.endYear);
+
+    return {
+      id: toUuidOrNew(item?.id),
+      level: parsedLevel.success ? parsedLevel.data : "OTHER",
+      institution: typeof item?.institution === "string" ? item.institution.trim() : "",
+      degree: typeof item?.degree === "string" ? item.degree.trim() : "",
+      fieldOfStudy: typeof item?.fieldOfStudy === "string" ? item.fieldOfStudy.trim() : "",
+      awardingBody: typeof item?.awardingBody === "string" ? item.awardingBody.trim() || null : null,
+      startYear: Number.isFinite(startYearNum) ? Math.max(1950, Math.min(2100, Math.trunc(startYearNum))) : currentYear,
+      endYear: endYearNum !== null && Number.isFinite(endYearNum)
+        ? Math.max(1950, Math.min(2100, Math.trunc(endYearNum)))
+        : null,
+      grade: typeof item?.grade === "string" ? item.grade.trim() || null : null,
+    };
+  });
+}
+
+function normalizeCertificationItems(items: unknown[]): CertificationItem[] {
+  return items.map((item: any) => ({
+    id: toUuidOrNew(item?.id),
+    name: typeof item?.name === "string" ? item.name.trim() : "",
+    issuer: typeof item?.issuer === "string" ? item.issuer.trim() : "",
+    issuedOn: typeof item?.issuedOn === "string" ? item.issuedOn : new Date().toISOString().slice(0, 10),
+    expiresOn: typeof item?.expiresOn === "string" && item.expiresOn.trim() ? item.expiresOn : null,
+    credentialUrl: typeof item?.credentialUrl === "string" && item.credentialUrl.trim() ? item.credentialUrl.trim() : null,
+  }));
+}
+
+function normalizeAchievementItems(items: unknown[]): AchievementItem[] {
+  return items.map((item: any) => ({
+    id: toUuidOrNew(item?.id),
+    title: typeof item?.title === "string" ? item.title.trim() : "",
+    description: typeof item?.description === "string" ? item.description.trim() : "",
+    date: typeof item?.date === "string" && item.date.trim() ? item.date : null,
+  }));
+}
 
 const appStatusSchema = z.enum(["APPLIED", "SHORTLISTED", "REJECTED", "INTERVIEW_SCHEDULED", "OFFERED", "HIRED"]);
 
@@ -29,6 +178,75 @@ const recruiterProfileUpdateSchema = z.object({
   description: z.string().trim().max(1000).nullable().optional(),
 });
 
+const jobSeekerProfilePatchSchema = z.object({
+  photoDataUrl: z.string().trim().nullable().optional(),
+  fullName: z.string().trim().min(1).optional(),
+  phone: z.string().trim().nullable().optional(),
+  location: z.string().trim().nullable().optional(),
+  headline: z.string().trim().nullable().optional(),
+  about: z.string().trim().max(5000).nullable().optional(),
+  experienceYears: z.number().int().min(0).max(60).optional(),
+  desiredRole: z.string().trim().nullable().optional(),
+  skills: z.array(z.string().trim().min(1)).max(100).optional(),
+  skillLevels: z.record(z.string(), z.number().int().min(1).max(5)).optional(),
+  interests: z.array(z.string().trim().min(1)).max(100).optional(),
+  education: z.array(
+    z.object({
+      id: z.string(),
+      level: z.enum(["SCHOOL", "DIPLOMA", "BACHELOR", "MASTER", "PHD", "OTHER"]).optional(),
+      institution: z.string().trim(),
+      degree: z.string().trim(),
+      fieldOfStudy: z.string().trim(),
+      awardingBody: z.string().trim().nullable().optional(),
+      startYear: z.number().int(),
+      endYear: z.number().int().nullable().optional(),
+      grade: z.string().trim().nullable().optional(),
+    })
+  ).optional(),
+  experience: z.array(
+    z.object({
+      id: z.string(),
+      company: z.string().trim(),
+      title: z.string().trim(),
+      location: z.string().trim().nullable().optional(),
+      startDate: z.string(),
+      endDate: z.string().nullable().optional(),
+      summary: z.string().trim(),
+    })
+  ).optional(),
+  projects: z.array(
+    z.object({
+      id: z.string(),
+      name: z.string().trim(),
+      link: z.string().trim().nullable().optional(),
+      summary: z.string().trim(),
+      skills: z.array(z.string().trim()),
+    })
+  ).optional(),
+  certifications: z.array(
+    z.object({
+      id: z.string(),
+      name: z.string().trim(),
+      issuer: z.string().trim(),
+      issuedOn: z.string(),
+      expiresOn: z.string().nullable().optional(),
+      credentialUrl: z.string().trim().nullable().optional(),
+    })
+  ).optional(),
+  achievements: z.array(
+    z.object({
+      id: z.string(),
+      title: z.string().trim(),
+      description: z.string().trim(),
+      date: z.string().nullable().optional(),
+    })
+  ).optional(),
+  languages: z.array(z.unknown()).optional(),
+  isFresher: z.boolean().optional(),
+  visibility: z.enum(["PUBLIC", "PRIVATE"]).optional(),
+  activeGeneratedResumeId: z.string().uuid().nullable().optional(),
+});
+
 const listingStageSchema = z.enum(["DRAFT", "PENDING", "ACTIVE", "PAUSED", "CLOSED"]);
 
 const recruiterJobListingPreferencesPatchSchema = z.object({
@@ -41,6 +259,43 @@ type RecruiterContext = {
   email: string;
   approvalStatus: "PENDING" | "APPROVED" | "REJECTED";
   companyName: string;
+};
+
+type StoredJobSeekerProfileExtras = {
+  photoDataUrl: string | null;
+  skillLevels: Record<string, number>;
+  interests: string[];
+  education: unknown[];
+  experience: unknown[];
+  projects: unknown[];
+  certifications: unknown[];
+  achievements: unknown[];
+  languages: unknown[];
+};
+
+type JobSeekerProfileResponse = {
+  id: string;
+  userId: string;
+  photoDataUrl: string | null;
+  fullName: string;
+  phone: string | null;
+  location: string | null;
+  headline: string | null;
+  about: string | null;
+  experienceYears: number;
+  desiredRole: string | null;
+  skills: string[];
+  skillLevels: Record<string, number>;
+  interests: string[];
+  education: unknown[];
+  experience: unknown[];
+  projects: unknown[];
+  certifications: unknown[];
+  achievements: unknown[];
+  languages: unknown[];
+  isFresher: boolean;
+  visibility: "PUBLIC" | "PRIVATE";
+  activeGeneratedResumeId: string | null;
 };
 
 type ExternalJobRow = {
@@ -139,6 +394,683 @@ function mapNotification(row: any) {
 function isSchemaMissingError(error: unknown): boolean {
   const code = (error as { code?: string } | null)?.code;
   return code === "42P01" || code === "PGRST205";
+}
+
+const PROFILE_BUILDER_SETTINGS_KEY = "profileBuilder";
+
+function normalizeNullableText(value: string | null | undefined): string | null {
+  if (value === undefined) return null;
+  if (value === null) return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+function splitFullName(fullName: string): { firstName: string; lastName: string | null } {
+  const trimmed = fullName.trim();
+  if (!trimmed) {
+    return { firstName: "User", lastName: null };
+  }
+
+  const [firstName = "User", ...rest] = trimmed.split(/\s+/);
+  return {
+    firstName,
+    lastName: rest.length ? rest.join(" ") : null,
+  };
+}
+
+function joinFullName(firstName: unknown, lastName: unknown, fallback: string): string {
+  const parts = [firstName, lastName]
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  return parts.join(" ") || fallback;
+}
+
+function defaultStoredJobSeekerProfileExtras(): StoredJobSeekerProfileExtras {
+  return {
+    photoDataUrl: null,
+    skillLevels: {},
+    interests: [],
+    education: [],
+    experience: [],
+    projects: [],
+    certifications: [],
+    achievements: [],
+    languages: [],
+  };
+}
+
+function readStoredJobSeekerProfileExtras(settings: Record<string, unknown>): StoredJobSeekerProfileExtras {
+  const defaults = defaultStoredJobSeekerProfileExtras();
+  const raw = settings[PROFILE_BUILDER_SETTINGS_KEY];
+
+  if (!raw || typeof raw !== "object") return defaults;
+
+  const source = raw as Record<string, unknown>;
+  const skillLevels = source.skillLevels && typeof source.skillLevels === "object"
+    ? Object.fromEntries(
+        Object.entries(source.skillLevels as Record<string, unknown>).filter(
+          (entry): entry is [string, number] => typeof entry[0] === "string" && typeof entry[1] === "number"
+        )
+      )
+    : {};
+
+  const arrayOrEmpty = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+  const stringArrayOrEmpty = (value: unknown): string[] =>
+    Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+
+  return {
+    photoDataUrl: typeof source.photoDataUrl === "string" ? source.photoDataUrl : null,
+    skillLevels,
+    interests: stringArrayOrEmpty(source.interests),
+    education: arrayOrEmpty(source.education),
+    experience: arrayOrEmpty(source.experience),
+    projects: arrayOrEmpty(source.projects),
+    certifications: arrayOrEmpty(source.certifications),
+    achievements: arrayOrEmpty(source.achievements),
+    languages: arrayOrEmpty(source.languages),
+  };
+}
+
+async function getBasicsRecord(userId: string): Promise<Record<string, unknown> | null> {
+  const { data, error } = await getSupabaseAdmin()
+    .from("basics")
+    .select("*")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (error && isSchemaMissingError(error)) return null;
+  if (error) throw new HttpError(500, error.message);
+  return (data as Record<string, unknown> | null) ?? null;
+}
+
+async function syncBasicsRecord(userId: string, profile: JobSeekerProfileResponse): Promise<void> {
+  const supabase = getSupabaseAdmin();
+  const existing = await getBasicsRecord(userId);
+  const { firstName, lastName } = splitFullName(profile.fullName);
+  const payload = {
+    user_id: userId,
+    first_name: firstName,
+    last_name: lastName,
+    headline: profile.headline,
+    phone_number: profile.phone,
+    location: profile.location,
+    desired_role: profile.desiredRole,
+    experience_years: profile.experienceYears,
+    visibility: profile.visibility,
+    about: profile.about,
+  };
+
+  if (existing?.id && typeof existing.id === "string") {
+    const { error } = await supabase.from("basics").update(payload).eq("id", existing.id);
+    if (error && isSchemaMissingError(error)) return;
+    if (error) throw new HttpError(500, error.message);
+    return;
+  }
+
+  const { error } = await supabase.from("basics").insert({ id: crypto.randomUUID(), ...payload });
+  if (error && isSchemaMissingError(error)) return;
+  if (error) throw new HttpError(500, error.message);
+}
+
+async function getSkillsRecord(userId: string): Promise<{ skills: string[]; skillLevels: Record<string, number> } | null> {
+  const { data, error } = await getSupabaseAdmin()
+    .from("skills")
+    .select("skills,skill_levels")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (error && isSchemaMissingError(error)) return null;
+  if (error) throw new HttpError(500, error.message);
+  if (!data) return null;
+
+  const skills = Array.isArray(data.skills) ? data.skills.filter((item): item is string => typeof item === "string") : [];
+  const skillLevels =
+    data.skill_levels && typeof data.skill_levels === "object"
+      ? Object.fromEntries(
+          Object.entries(data.skill_levels as Record<string, unknown>).filter(
+            (entry): entry is [string, number] => typeof entry[0] === "string" && typeof entry[1] === "number"
+          )
+        )
+      : {};
+
+  return { skills, skillLevels };
+}
+
+async function syncSkillsRecord(userId: string, skills: string[], skillLevels: Record<string, number>): Promise<void> {
+  const supabase = getSupabaseAdmin();
+  const existing = await getSkillsRecord(userId);
+
+  const payload = {
+    user_id: userId,
+    skills,
+    skill_levels: skillLevels,
+  };
+
+  if (existing) {
+    const { error } = await supabase
+      .from("skills")
+      .update(payload)
+      .eq("user_id", userId);
+    if (error && isSchemaMissingError(error)) return;
+    if (error) throw new HttpError(500, error.message);
+    return;
+  }
+
+  const { error } = await supabase.from("skills").insert({ id: crypto.randomUUID(), ...payload });
+  if (error && isSchemaMissingError(error)) return;
+  if (error) throw new HttpError(500, error.message);
+}
+
+async function getLanguagesRecord(userId: string): Promise<unknown[] | null> {
+  const { data, error } = await getSupabaseAdmin()
+    .from("languages")
+    .select("languages")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (error && isSchemaMissingError(error)) return null;
+  if (error) throw new HttpError(500, error.message);
+  if (!data) return null;
+
+  try {
+    const raw = data.languages;
+    if (typeof raw === "string") {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    }
+    return Array.isArray(raw) ? raw : [];
+  } catch {
+    return [];
+  }
+}
+
+async function syncLanguagesRecord(userId: string, languages: unknown[]): Promise<void> {
+  const supabase = getSupabaseAdmin();
+  const existing = await getLanguagesRecord(userId);
+
+  const payload = {
+    user_id: userId,
+    languages: JSON.stringify(languages),
+  };
+
+  if (existing !== null) {
+    const { error } = await supabase
+      .from("languages")
+      .update(payload)
+      .eq("user_id", userId);
+    if (error && isSchemaMissingError(error)) return;
+    if (error) throw new HttpError(500, error.message);
+    return;
+  }
+
+  const { error } = await supabase.from("languages").insert({ id: crypto.randomUUID(), ...payload });
+  if (error && isSchemaMissingError(error)) return;
+  if (error) throw new HttpError(500, error.message);
+}
+
+async function getInterestsRecord(userId: string): Promise<string[] | null> {
+  const { data, error } = await getSupabaseAdmin()
+    .from("interests")
+    .select("interests")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (error && isSchemaMissingError(error)) return null;
+  if (error) throw new HttpError(500, error.message);
+  if (!data) return null;
+
+  return Array.isArray(data.interests) ? data.interests.filter((item): item is string => typeof item === "string") : [];
+}
+
+async function syncInterestsRecord(userId: string, interests: string[]): Promise<void> {
+  const supabase = getSupabaseAdmin();
+  const existing = await getInterestsRecord(userId);
+
+  const payload = {
+    user_id: userId,
+    interests,
+  };
+
+  if (existing !== null) {
+    const { error } = await supabase
+      .from("interests")
+      .update(payload)
+      .eq("user_id", userId);
+    if (error && isSchemaMissingError(error)) return;
+    if (error) throw new HttpError(500, error.message);
+    return;
+  }
+
+  const { error } = await supabase.from("interests").insert({ id: crypto.randomUUID(), ...payload });
+  if (error && isSchemaMissingError(error)) return;
+  if (error) throw new HttpError(500, error.message);
+}
+
+async function getExperienceRecords(userId: string): Promise<ExperienceItem[] | null> {
+  const { data, error } = await getSupabaseAdmin()
+    .from("experience")
+    .select("*")
+    .eq("user_id", userId);
+
+  if (error && isSchemaMissingError(error)) return null;
+  if (error) throw new HttpError(500, error.message);
+  if (!data) return null;
+
+  return data.map((row: any) => ({
+    id: row.id,
+    company: row.company || "",
+    title: row.title || "",
+    location: null, // Not stored in DB - kept in user_settings
+    startDate: row.start_date ? row.start_date : "",
+    endDate: row.end_date || null,
+    summary: row.description || "",
+  }));
+}
+
+function mergeExperienceWithStored(dbItems: ExperienceItem[], storedItems: unknown[]): ExperienceItem[] {
+  const storedById = new Map<string, { location: string | null }>();
+  const stored = normalizeExperienceItems(storedItems);
+  for (const item of stored) storedById.set(item.id, { location: item.location });
+
+  return dbItems.map((item, index) => {
+    const storedByItemId = storedById.get(item.id);
+    const fallbackByIndex = stored[index];
+    return {
+      ...item,
+      location: storedByItemId?.location ?? fallbackByIndex?.location ?? null,
+    };
+  });
+}
+
+async function syncExperienceRecords(userId: string, items: unknown[]): Promise<void> {
+  const supabase = getSupabaseAdmin();
+
+  // Validate and transform items
+  const validatedItems = normalizeExperienceItems(items);
+
+  // Get existing IDs
+  const { data: existing, error: selectError } = await supabase
+    .from("experience")
+    .select("id")
+    .eq("user_id", userId);
+
+  if (selectError && !isSchemaMissingError(selectError)) throw new HttpError(500, selectError.message);
+
+  const existingIds = (existing || []).map((r: any) => r.id);
+  const incomingIds = validatedItems.map((i) => i.id);
+
+  // Delete records not in the incoming list
+  const toDelete = existingIds.filter((id: string) => !incomingIds.includes(id));
+  if (toDelete.length > 0) {
+    const { error: deleteError } = await supabase
+      .from("experience")
+      .delete()
+      .in("id", toDelete);
+
+    if (deleteError && !isSchemaMissingError(deleteError)) throw new HttpError(500, deleteError.message);
+  }
+
+  // Upsert incoming items
+  for (const item of validatedItems) {
+    const payload = {
+      id: item.id,
+      user_id: userId,
+      company: item.company,
+      title: item.title,
+      start_date: item.startDate && item.startDate.trim() ? item.startDate.slice(0, 10) : null,
+      end_date: item.endDate && item.endDate.trim() ? item.endDate.slice(0, 10) : null,
+      description: item.summary,
+    };
+
+    const { error: upsertError } = await supabase
+      .from("experience")
+      .upsert(payload, { onConflict: "id" });
+
+    if (upsertError && !isSchemaMissingError(upsertError)) throw new HttpError(500, upsertError.message);
+  }
+}
+
+async function getProjectsRecords(userId: string): Promise<ProjectItem[] | null> {
+  const { data, error } = await getSupabaseAdmin()
+    .from("projects")
+    .select("id,name,technologies,description,github_link")
+    .eq("user_id", userId);
+
+  if (error && isSchemaMissingError(error)) return null;
+  if (error) throw new HttpError(500, error.message);
+  if (!data) return null;
+
+  return data.map((row: any) => ({
+    id: row.id,
+    name: typeof row.name === "string" ? row.name : "",
+    link: typeof row.github_link === "string" && row.github_link.trim() ? row.github_link : null,
+    summary: typeof row.description === "string" ? row.description : "",
+    skills: typeof row.technologies === "string"
+      ? row.technologies.split(",").map((x: string) => x.trim()).filter(Boolean)
+      : [],
+  }));
+}
+
+async function syncProjectsRecords(userId: string, items: unknown[]): Promise<void> {
+  const supabase = getSupabaseAdmin();
+  const validatedItems = normalizeProjectItems(items);
+
+  const { data: existing, error: selectError } = await supabase
+    .from("projects")
+    .select("id")
+    .eq("user_id", userId);
+
+  if (selectError && !isSchemaMissingError(selectError)) throw new HttpError(500, selectError.message);
+
+  const existingIds = (existing || []).map((r: any) => r.id);
+  const incomingIds = validatedItems.map((i) => i.id);
+
+  const toDelete = existingIds.filter((id: string) => !incomingIds.includes(id));
+  if (toDelete.length > 0) {
+    const { error: deleteError } = await supabase
+      .from("projects")
+      .delete()
+      .eq("user_id", userId)
+      .in("id", toDelete);
+
+    if (deleteError && !isSchemaMissingError(deleteError)) throw new HttpError(500, deleteError.message);
+  }
+
+  for (const item of validatedItems) {
+    const payload = {
+      id: item.id,
+      user_id: userId,
+      name: item.name,
+      technologies: item.skills.join(", "),
+      description: item.summary,
+      github_link: item.link,
+    };
+
+    const { error: upsertError } = await supabase
+      .from("projects")
+      .upsert(payload, { onConflict: "id" });
+
+    if (upsertError && !isSchemaMissingError(upsertError)) throw new HttpError(500, upsertError.message);
+  }
+}
+
+async function getEducationRecords(userId: string): Promise<EducationItem[] | null> {
+  const { data, error } = await getSupabaseAdmin()
+    .from("education")
+    .select("id,education_level,institution,degree,field_of_study,university,grade,start_year,end_year")
+    .eq("user_id", userId);
+
+  if (error && isSchemaMissingError(error)) return null;
+  if (error) throw new HttpError(500, error.message);
+  if (!data) return null;
+
+  return data.map((row: any) => {
+    const level = z.enum(["SCHOOL", "DIPLOMA", "BACHELOR", "MASTER", "PHD", "OTHER"]).safeParse(row.education_level);
+    const parsedEndYear = row.end_year === null || row.end_year === undefined || row.end_year === "Present"
+      ? null
+      : Number(row.end_year);
+
+    return {
+      id: row.id,
+      level: level.success ? level.data : "OTHER",
+      institution: typeof row.institution === "string" ? row.institution : "",
+      degree: typeof row.degree === "string" ? row.degree : "",
+      fieldOfStudy: typeof row.field_of_study === "string" ? row.field_of_study : "",
+      awardingBody: typeof row.university === "string" && row.university.trim() ? row.university : null,
+      startYear: typeof row.start_year === "number" ? row.start_year : new Date().getFullYear(),
+      endYear: Number.isFinite(parsedEndYear) ? parsedEndYear : null,
+      grade: typeof row.grade === "string" && row.grade.trim() ? row.grade : null,
+    };
+  });
+}
+
+async function syncEducationRecords(userId: string, items: unknown[]): Promise<void> {
+  const supabase = getSupabaseAdmin();
+  const validatedItems = normalizeEducationItems(items);
+
+  const { data: existing, error: selectError } = await supabase
+    .from("education")
+    .select("id")
+    .eq("user_id", userId);
+
+  if (selectError && !isSchemaMissingError(selectError)) throw new HttpError(500, selectError.message);
+
+  const existingIds = (existing || []).map((r: any) => r.id);
+  const incomingIds = validatedItems.map((i) => i.id);
+
+  const toDelete = existingIds.filter((id: string) => !incomingIds.includes(id));
+  if (toDelete.length > 0) {
+    const { error: deleteError } = await supabase
+      .from("education")
+      .delete()
+      .eq("user_id", userId)
+      .in("id", toDelete);
+
+    if (deleteError && !isSchemaMissingError(deleteError)) throw new HttpError(500, deleteError.message);
+  }
+
+  for (const item of validatedItems) {
+    const payload = {
+      id: item.id,
+      user_id: userId,
+      education_level: item.level || "OTHER",
+      institution: item.institution,
+      degree: item.degree || null,
+      field_of_study: item.fieldOfStudy || null,
+      university: item.awardingBody || null,
+      grade: item.grade,
+      start_year: item.startYear,
+      end_year: item.endYear === null ? "Present" : String(item.endYear),
+    };
+
+    const { error: upsertError } = await supabase
+      .from("education")
+      .upsert(payload, { onConflict: "id" });
+
+    if (upsertError && !isSchemaMissingError(upsertError)) throw new HttpError(500, upsertError.message);
+  }
+}
+
+async function getCertificationsRecords(userId: string): Promise<CertificationItem[] | null> {
+  const { data, error } = await getSupabaseAdmin()
+    .from("certifications")
+    .select("id,name,issuer,issued_on,expires_on,verification_method,credential_url,proof_file_url")
+    .eq("user_id", userId);
+
+  if (error && isSchemaMissingError(error)) return null;
+  if (error) throw new HttpError(500, error.message);
+  if (!data) return null;
+
+  return data.map((row: any) => {
+    const issued = typeof row.issued_on === "string" ? row.issued_on : new Date().toISOString().slice(0, 10);
+    const expires = typeof row.expires_on === "string" && row.expires_on.trim() ? row.expires_on : null;
+    const isUpload = row.verification_method === "UPLOAD";
+    const credentialUrl = isUpload
+      ? (typeof row.proof_file_url === "string" && row.proof_file_url.trim() ? `uploaded:${row.proof_file_url}` : null)
+      : (typeof row.credential_url === "string" && row.credential_url.trim() ? row.credential_url : null);
+
+    return {
+      id: row.id,
+      name: typeof row.name === "string" ? row.name : "",
+      issuer: typeof row.issuer === "string" ? row.issuer : "",
+      issuedOn: issued,
+      expiresOn: expires,
+      credentialUrl,
+    };
+  });
+}
+
+async function syncCertificationsRecords(userId: string, items: unknown[]): Promise<void> {
+  const supabase = getSupabaseAdmin();
+  const validatedItems = normalizeCertificationItems(items);
+
+  const { data: existing, error: selectError } = await supabase
+    .from("certifications")
+    .select("id")
+    .eq("user_id", userId);
+
+  if (selectError && !isSchemaMissingError(selectError)) throw new HttpError(500, selectError.message);
+
+  const existingIds = (existing || []).map((r: any) => r.id);
+  const incomingIds = validatedItems.map((i) => i.id);
+
+  const toDelete = existingIds.filter((id: string) => !incomingIds.includes(id));
+  if (toDelete.length > 0) {
+    const { error: deleteError } = await supabase
+      .from("certifications")
+      .delete()
+      .eq("user_id", userId)
+      .in("id", toDelete);
+
+    if (deleteError && !isSchemaMissingError(deleteError)) throw new HttpError(500, deleteError.message);
+  }
+
+  for (const item of validatedItems) {
+    const isUpload = Boolean(item.credentialUrl && item.credentialUrl.startsWith("uploaded:"));
+    const proofFileUrl = isUpload ? item.credentialUrl!.replace("uploaded:", "") : null;
+    const payload = {
+      id: item.id,
+      user_id: userId,
+      name: item.name,
+      issuer: item.issuer,
+      issued_on: item.issuedOn ? item.issuedOn.slice(0, 10) : new Date().toISOString().slice(0, 10),
+      expires_on: item.expiresOn ? item.expiresOn.slice(0, 10) : null,
+      verification_method: isUpload ? "UPLOAD" : "URL",
+      credential_url: isUpload ? null : item.credentialUrl,
+      proof_file_url: proofFileUrl,
+    };
+
+    const { error: upsertError } = await supabase
+      .from("certifications")
+      .upsert(payload, { onConflict: "id" });
+
+    if (upsertError && !isSchemaMissingError(upsertError)) throw new HttpError(500, upsertError.message);
+  }
+}
+
+async function getAchievementsRecords(userId: string): Promise<AchievementItem[] | null> {
+  const { data, error } = await getSupabaseAdmin()
+    .from("achievements")
+    .select("id,title,date,description")
+    .eq("user_id", userId);
+
+  if (error && isSchemaMissingError(error)) return null;
+  if (error) throw new HttpError(500, error.message);
+  if (!data) return null;
+
+  return data.map((row: any) => ({
+    id: row.id,
+    title: typeof row.title === "string" ? row.title : "",
+    description: typeof row.description === "string" ? row.description : "",
+    date: typeof row.date === "string" && row.date.trim() ? row.date : null,
+  }));
+}
+
+async function syncAchievementsRecords(userId: string, items: unknown[]): Promise<void> {
+  const supabase = getSupabaseAdmin();
+  const validatedItems = normalizeAchievementItems(items);
+
+  const { data: existing, error: selectError } = await supabase
+    .from("achievements")
+    .select("id")
+    .eq("user_id", userId);
+
+  if (selectError && !isSchemaMissingError(selectError)) throw new HttpError(500, selectError.message);
+
+  const existingIds = (existing || []).map((r: any) => r.id);
+  const incomingIds = validatedItems.map((i) => i.id);
+
+  const toDelete = existingIds.filter((id: string) => !incomingIds.includes(id));
+  if (toDelete.length > 0) {
+    const { error: deleteError } = await supabase
+      .from("achievements")
+      .delete()
+      .eq("user_id", userId)
+      .in("id", toDelete);
+
+    if (deleteError && !isSchemaMissingError(deleteError)) throw new HttpError(500, deleteError.message);
+  }
+
+  for (const item of validatedItems) {
+    const payload = {
+      id: item.id,
+      user_id: userId,
+      title: item.title,
+      date: item.date ? item.date.slice(0, 10) : new Date().toISOString().slice(0, 10),
+      description: item.description || null,
+    };
+
+    const { error: upsertError } = await supabase
+      .from("achievements")
+      .upsert(payload, { onConflict: "id" });
+
+    if (upsertError && !isSchemaMissingError(upsertError)) throw new HttpError(500, upsertError.message);
+  }
+}
+
+async function getJobSeekerProfile(userId: string): Promise<JobSeekerProfileResponse> {
+  const supabase = getSupabaseAdmin();
+  const [{ data: profile, error: profileError }, { data: seekerProfile, error: seekerProfileError }, settings, basics, skillsRecord, languagesRecord, interestsRecord, experienceRecords, projectRecords, educationRecords, certificationRecords, achievementRecords] = await Promise.all([
+    supabase
+      .from("profiles")
+      .select("id,email,full_name,phone,location,headline,about")
+      .eq("id", userId)
+      .maybeSingle(),
+    supabase
+      .from("job_seeker_profiles")
+      .select("user_id,experience_years,desired_role,skills,is_fresher,visibility,active_generated_resume_id")
+      .eq("user_id", userId)
+      .maybeSingle(),
+    getUserSettingsRecord(userId),
+    getBasicsRecord(userId),
+    getSkillsRecord(userId),
+    getLanguagesRecord(userId),
+    getInterestsRecord(userId),
+    getExperienceRecords(userId),
+    getProjectsRecords(userId),
+    getEducationRecords(userId),
+    getCertificationsRecords(userId),
+    getAchievementsRecords(userId),
+  ]);
+
+  if (profileError) throw new HttpError(500, profileError.message);
+  if (seekerProfileError) throw new HttpError(500, seekerProfileError.message);
+  if (!profile) throw new HttpError(404, "Profile not found");
+
+  const stored = readStoredJobSeekerProfileExtras(settings);
+  const fallbackName = profile.full_name || String(profile.email || "User").split("@")[0] || "User";
+  const fullName = joinFullName(basics?.first_name, basics?.last_name, fallbackName);
+  const visibility = basics?.visibility === "PRIVATE" || seekerProfile?.visibility === "PRIVATE" ? "PRIVATE" : "PUBLIC";
+
+  return {
+    id: userId,
+    userId,
+    photoDataUrl: stored.photoDataUrl,
+    fullName,
+    phone: normalizeNullableText((basics?.phone_number as string | null | undefined) ?? profile.phone),
+    location: normalizeNullableText((basics?.location as string | null | undefined) ?? profile.location),
+    headline: normalizeNullableText((basics?.headline as string | null | undefined) ?? profile.headline),
+    about: normalizeNullableText((basics?.about as string | null | undefined) ?? profile.about),
+    experienceYears:
+      typeof basics?.experience_years === "number"
+        ? basics.experience_years
+        : seekerProfile?.experience_years || 0,
+    desiredRole: normalizeNullableText((basics?.desired_role as string | null | undefined) ?? seekerProfile?.desired_role),
+    skills: skillsRecord?.skills || [],
+    skillLevels: skillsRecord?.skillLevels || {},
+    interests: interestsRecord || [],
+    education: educationRecords || stored.education,
+    experience: experienceRecords ? mergeExperienceWithStored(experienceRecords, stored.experience) : stored.experience,
+    projects: projectRecords || stored.projects,
+    certifications: certificationRecords || stored.certifications,
+    achievements: achievementRecords || stored.achievements,
+    languages: languagesRecord || [],
+    isFresher: seekerProfile?.is_fresher ?? false,
+    visibility,
+    activeGeneratedResumeId: seekerProfile?.active_generated_resume_id || null,
+  };
 }
 
 function normalizeListingPrefs(raw: unknown): {
@@ -352,6 +1284,12 @@ async function ensureJobSeeker(userId: string): Promise<void> {
 
     if (upsertError) throw new HttpError(500, upsertError.message);
   }
+
+  const { error: seekerUpsertError } = await supabase
+    .from("job_seeker_profiles")
+    .upsert({ user_id: userId }, { onConflict: "user_id" });
+
+  if (seekerUpsertError) throw new HttpError(500, seekerUpsertError.message);
 }
 
 async function getSavedExternalJobIdsFromUserSettings(userId: string): Promise<string[]> {
@@ -388,6 +1326,221 @@ async function setSavedExternalJobIdsInUserSettings(userId: string, ids: string[
 
   if (upsertError) throw new HttpError(500, upsertError.message);
 }
+
+recruiterSupabaseRouter.get("/job-seeker/profile", async (req, res, next) => {
+  try {
+    const authed = req as unknown as AuthenticatedRequest;
+    await ensureJobSeeker(authed.auth.userId);
+
+    const profile = await getJobSeekerProfile(authed.auth.userId);
+    res.json({ profile });
+  } catch (err) {
+    next(err);
+  }
+});
+
+recruiterSupabaseRouter.get("/job-seeker/resume", async (req, res, next) => {
+  try {
+    const authed = req as unknown as AuthenticatedRequest;
+    const userId = authed.auth.userId;
+    await ensureJobSeeker(userId);
+
+    const { data, error } = await getSupabaseAdmin()
+      .from("resumes")
+      .select("id,original_name,mime_type,size_bytes,created_at")
+      .eq("job_seeker_id", userId)
+      .order("created_at", { ascending: false });
+
+    if (error) throw new HttpError(500, error.message);
+
+    res.json({
+      resumes: (data || []).map((row: any) => ({
+        id: row.id,
+        originalName: row.original_name,
+        mimeType: row.mime_type || "application/octet-stream",
+        sizeBytes: typeof row.size_bytes === "number" ? row.size_bytes : 0,
+        createdAt: row.created_at,
+      })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+recruiterSupabaseRouter.post("/job-seeker/resume", (req, res, next) => {
+  resumeUpload.single("resume")(req as any, res as any, async (uploadErr: any) => {
+    if (uploadErr) {
+      if (uploadErr instanceof HttpError) return next(uploadErr);
+      if (uploadErr?.code === "LIMIT_FILE_SIZE") return next(new HttpError(400, "Resume file must be 5MB or smaller"));
+      return next(new HttpError(400, uploadErr?.message || "Failed to upload resume"));
+    }
+
+    try {
+      const authed = req as unknown as AuthenticatedRequest;
+      const userId = authed.auth.userId;
+      await ensureJobSeeker(userId);
+
+      const file = (req as any).file as Express.Multer.File | undefined;
+      if (!file) throw new HttpError(400, "Missing resume file");
+
+      const rowId = crypto.randomUUID();
+      const { error } = await getSupabaseAdmin()
+        .from("resumes")
+        .insert({
+          id: rowId,
+          job_seeker_id: userId,
+          original_name: file.originalname,
+          storage_path: file.filename,
+          mime_type: file.mimetype || null,
+          size_bytes: Number.isFinite(file.size) ? file.size : null,
+        });
+
+      if (error) throw new HttpError(500, error.message);
+
+      res.status(201).json({
+        resume: {
+          id: rowId,
+          originalName: file.originalname,
+          mimeType: file.mimetype || "application/octet-stream",
+          sizeBytes: Number.isFinite(file.size) ? file.size : 0,
+          createdAt: new Date().toISOString(),
+        },
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+});
+
+recruiterSupabaseRouter.get("/files/resume/:resumeId", async (req, res, next) => {
+  try {
+    const authed = req as unknown as AuthenticatedRequest;
+    const userId = authed.auth.userId;
+    const { resumeId } = z.object({ resumeId: z.string().uuid() }).parse(req.params);
+
+    const { data, error } = await getSupabaseAdmin()
+      .from("resumes")
+      .select("id,job_seeker_id,original_name,storage_path,mime_type")
+      .eq("id", resumeId)
+      .eq("job_seeker_id", userId)
+      .maybeSingle();
+
+    if (error) throw new HttpError(500, error.message);
+    if (!data) throw new HttpError(404, "Resume not found");
+
+    const safeName = path.basename(String(data.storage_path || ""));
+    const absPath = path.join(resumesUploadDir, safeName);
+    const stat = await fsp.stat(absPath).catch(() => null);
+    if (!stat || !stat.isFile()) throw new HttpError(404, "Resume file not found");
+
+    res.setHeader("Content-Type", data.mime_type || "application/octet-stream");
+    res.setHeader("Content-Disposition", `inline; filename=\"${String(data.original_name || "resume") }\"`);
+    res.sendFile(absPath);
+  } catch (err) {
+    next(err);
+  }
+});
+
+recruiterSupabaseRouter.patch("/job-seeker/profile", async (req, res, next) => {
+  try {
+    const authed = req as unknown as AuthenticatedRequest;
+    const userId = authed.auth.userId;
+    const body = jobSeekerProfilePatchSchema.parse(req.body ?? {});
+
+    await ensureJobSeeker(userId);
+
+    const currentProfile = await getJobSeekerProfile(userId);
+    const normalizedEducation = normalizeEducationItems((body.education ?? currentProfile.education) as unknown[]);
+    const normalizedExperience = normalizeExperienceItems((body.experience ?? currentProfile.experience) as unknown[]);
+    const normalizedProjects = normalizeProjectItems((body.projects ?? currentProfile.projects) as unknown[]);
+    const normalizedCertifications = normalizeCertificationItems((body.certifications ?? currentProfile.certifications) as unknown[]);
+    const normalizedAchievements = normalizeAchievementItems((body.achievements ?? currentProfile.achievements) as unknown[]);
+    const nextProfile: JobSeekerProfileResponse = {
+      ...currentProfile,
+      ...body,
+      fullName: body.fullName !== undefined ? body.fullName.trim() : currentProfile.fullName,
+      phone: body.phone !== undefined ? normalizeNullableText(body.phone) : currentProfile.phone,
+      location: body.location !== undefined ? normalizeNullableText(body.location) : currentProfile.location,
+      headline: body.headline !== undefined ? normalizeNullableText(body.headline) : currentProfile.headline,
+      about: body.about !== undefined ? normalizeNullableText(body.about) : currentProfile.about,
+      experienceYears: body.experienceYears !== undefined ? body.experienceYears : currentProfile.experienceYears,
+      desiredRole: body.desiredRole !== undefined ? normalizeNullableText(body.desiredRole) : currentProfile.desiredRole,
+      photoDataUrl: body.photoDataUrl !== undefined ? normalizeNullableText(body.photoDataUrl) : currentProfile.photoDataUrl,
+      skills: body.skills !== undefined ? body.skills : currentProfile.skills,
+      skillLevels: body.skillLevels !== undefined ? body.skillLevels : currentProfile.skillLevels,
+      interests: body.interests !== undefined ? body.interests : currentProfile.interests,
+      education: normalizedEducation,
+      experience: normalizedExperience,
+      projects: normalizedProjects,
+      certifications: normalizedCertifications,
+      achievements: normalizedAchievements,
+      languages: body.languages !== undefined ? body.languages : currentProfile.languages,
+      isFresher: body.isFresher !== undefined ? body.isFresher : currentProfile.isFresher,
+      visibility: body.visibility !== undefined ? body.visibility : currentProfile.visibility,
+      activeGeneratedResumeId:
+        body.activeGeneratedResumeId !== undefined ? body.activeGeneratedResumeId : currentProfile.activeGeneratedResumeId,
+    };
+
+    const supabase = getSupabaseAdmin();
+    const profileUpdatePayload = {
+      full_name: nextProfile.fullName,
+      phone: nextProfile.phone,
+      location: nextProfile.location,
+      headline: nextProfile.headline,
+      about: nextProfile.about,
+    };
+    const { error: profileUpdateError } = await supabase
+      .from("profiles")
+      .update(profileUpdatePayload)
+      .eq("id", userId);
+    if (profileUpdateError) throw new HttpError(500, profileUpdateError.message);
+
+    const seekerProfilePayload = {
+      user_id: userId,
+      experience_years: nextProfile.experienceYears,
+      desired_role: nextProfile.desiredRole,
+      skills: nextProfile.skills,
+      is_fresher: nextProfile.isFresher,
+      visibility: nextProfile.visibility,
+      active_generated_resume_id: nextProfile.activeGeneratedResumeId,
+    };
+    const { error: seekerProfileError } = await supabase
+      .from("job_seeker_profiles")
+      .upsert(seekerProfilePayload, { onConflict: "user_id" });
+    if (seekerProfileError) throw new HttpError(500, seekerProfileError.message);
+
+    const currentSettings = await getUserSettingsRecord(userId);
+    await upsertUserSettingsRecord(userId, {
+      ...currentSettings,
+      [PROFILE_BUILDER_SETTINGS_KEY]: {
+        photoDataUrl: nextProfile.photoDataUrl,
+        skillLevels: nextProfile.skillLevels,
+        interests: nextProfile.interests,
+        education: normalizedEducation,
+        experience: normalizedExperience,
+        projects: normalizedProjects,
+        certifications: normalizedCertifications,
+        achievements: normalizedAchievements,
+        languages: nextProfile.languages,
+      },
+    });
+
+    await syncBasicsRecord(userId, nextProfile);
+    await syncSkillsRecord(userId, nextProfile.skills, nextProfile.skillLevels);
+    await syncLanguagesRecord(userId, nextProfile.languages);
+    await syncInterestsRecord(userId, nextProfile.interests);
+    await syncEducationRecords(userId, normalizedEducation);
+    await syncExperienceRecords(userId, normalizedExperience);
+    await syncProjectsRecords(userId, normalizedProjects);
+    await syncCertificationsRecords(userId, normalizedCertifications);
+    await syncAchievementsRecords(userId, normalizedAchievements);
+
+    const profile = await getJobSeekerProfile(userId);
+    res.json({ profile });
+  } catch (err) {
+    next(err);
+  }
+});
 
 recruiterSupabaseRouter.get("/job-seeker/external-saved-job-ids", async (req, res, next) => {
   try {

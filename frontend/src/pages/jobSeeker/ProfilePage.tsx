@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { apiFormData, apiJson, ApiError } from "../../api/client";
 import { useAuth } from "../../auth/AuthContext";
 import { isProfileBuilderEnabled, fetchProfileFromSupabase, syncProfileToSupabase, addResumeUrl, listResumes, getSkillSuggestions } from "../../services/profileBuilderSupabase";
@@ -16,6 +17,7 @@ import type {
 } from "../../types";
 import { openResumePreview } from "../../utils/resumePreview";
 import { downloadGeneratedResumePdf } from "../../utils/generatedResumePdf";
+import { templateCatalog } from "../../resume/catalog";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
@@ -97,15 +99,40 @@ function buildProfilePatch(profile: JobSeekerProfile) {
 }
 
 function generateSummaryFromProfile(profile: JobSeekerProfile, notes: string) {
-  const parts = [
-    profile.headline || profile.desiredRole || "Professional",
-    profile.location ? `based in ${profile.location}` : "",
-    profile.experienceYears > 0 ? `${profile.experienceYears}+ years of experience` : "early-career",
-    profile.skills.length ? `skilled in ${profile.skills.slice(0, 6).join(", ")}` : "",
-    notes.trim() ? notes.trim() : "",
+  const name = profile.fullName.trim() || "This candidate";
+  const role = profile.headline?.trim() || profile.desiredRole?.trim() || "professional";
+  const location = profile.location?.trim();
+  const desiredRole = profile.desiredRole?.trim();
+  const userNotes = notes.trim();
+
+  const experienceText = profile.isFresher || profile.experienceYears <= 0
+    ? "an early-career profile"
+    : `${profile.experienceYears}+ years of experience`;
+
+  const line1Parts = [
+    `${name} is a ${role}`,
+    location ? `based in ${location}` : "",
+    `with ${experienceText}`,
   ].filter(Boolean);
 
-  return `${profile.fullName} is a ${parts.join(", ")}. Focused on delivering measurable outcomes, collaborating effectively with teams, and building reliable, user-centric solutions. Seeking opportunities that align with long-term growth and impact.`;
+  const line2 = desiredRole
+    ? `Currently seeking ${desiredRole} opportunities where they can contribute with ownership, collaboration, and measurable outcomes.`
+    : "Focused on delivering reliable, user-centric solutions with clear business impact.";
+
+  const line3 = userNotes ? `Additional focus: ${userNotes}.` : "";
+
+  const summary = [
+    `${line1Parts.join(", ")}.`,
+    line2,
+    line3,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  // Keep generated summary inside the 500-char About guidance.
+  return summary.length > 500 ? `${summary.slice(0, 497).trimEnd()}...` : summary;
 }
 
 function improveBulletsFromText(text: string, presentTense: boolean) {
@@ -142,7 +169,6 @@ function ProgressBar({ value }: { value: number }) {
     <div style={{ display: "grid", gap: 10 }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}>
         <div className="text-xs text-[#777777]">{safe}% complete</div>
-        <div className="text-xs text-[#777777]">3 of 7 sections done</div>
       </div>
       <div className="progress-track">
         <div className="progress-fill" style={{ width: `${safe}%` }} />
@@ -234,6 +260,7 @@ export function JobSeekerProfilePage() {
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const saveTimer = useRef<number | null>(null);
   const lastSavedSnapshot = useRef<string>("");
+  const latestSaveRequestId = useRef(0);
 
   type ProfileStep = "BASICS" | "SKILLS" | "EXPERIENCE" | "PROJECTS" | "EDUCATION" | "CERTIFICATIONS" | "RESUME";
   const steps: Array<{ key: ProfileStep; label: string; subtitle: string }> = [
@@ -394,7 +421,7 @@ export function JobSeekerProfilePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token, user]);
 
-  async function saveNow(nextProfile: JobSeekerProfile) {
+  async function saveNow(nextProfile: JobSeekerProfile, requestId: number) {
     if (!token) return;
     setSaveState("saving");
     setError(null);
@@ -424,6 +451,10 @@ export function JobSeekerProfilePage() {
         token,
         body: buildProfilePatch(nextProfile),
       });
+
+      // Ignore out-of-order responses from older save requests.
+      if (requestId !== latestSaveRequestId.current) return;
+
       setProfile(updated.profile);
       const parsedPhone = splitPhoneWithCode(updated.profile.phone, "+91");
       setPhoneCountryCode(parsedPhone.countryCode);
@@ -443,6 +474,9 @@ export function JobSeekerProfilePage() {
       setSaveState("saved");
       window.setTimeout(() => setSaveState("idle"), 3000);
     } catch (e) {
+      // Ignore stale failures from superseded save requests.
+      if (requestId !== latestSaveRequestId.current) return;
+
       if (isOptionalEndpointError(e)) {
         setLocalOnlyMode(true);
         saveLocalDraft(nextProfile);
@@ -478,8 +512,9 @@ export function JobSeekerProfilePage() {
 
     setSaveState("saving");
     if (saveTimer.current) window.clearTimeout(saveTimer.current);
+    const requestId = ++latestSaveRequestId.current;
     saveTimer.current = window.setTimeout(() => {
-      void saveNow(nextProfile);
+      void saveNow(nextProfile, requestId);
     }, 450);
   }
 
@@ -501,12 +536,6 @@ export function JobSeekerProfilePage() {
 
   async function generateResumeVersion() {
     if (!token || !profile) return;
-
-    // Gentle readiness gate (still allow generating for iteration).
-    if (completion < 40) {
-      setError("Add a bit more profile detail before generating a resume (aim for ~40%+). ");
-      return;
-    }
 
     setError(null);
     const payload = {
@@ -601,7 +630,7 @@ export function JobSeekerProfilePage() {
 
   const stepIndex = steps.findIndex((s) => s.key === step);
   const canBack = stepIndex > 0;
-  const canNext = stepIndex < steps.length - 1 && stepDone[step];
+  const canNext = stepIndex < steps.length - 1;
 
   function back() {
     if (!canBack) return;
@@ -679,7 +708,7 @@ export function JobSeekerProfilePage() {
         <div className="space-y-6">
           <Card className="space-y-4">
             <div className="profile-tabs-scroll flex gap-2 overflow-x-auto pb-1">
-              {steps.map((s, idx) => (
+              {steps.map((s) => (
                 <button
                   key={s.key}
                   type="button"
@@ -691,10 +720,6 @@ export function JobSeekerProfilePage() {
                       : "border-transparent bg-transparent text-[#666666] hover:bg-[rgba(255,255,255,0.03)] hover:text-[#AAAAAA]")
                   }
                   onClick={() => {
-                    if (idx > stepIndex && !stepDone[step]) {
-                      setError(`Complete the ${steps[stepIndex]?.label.toLowerCase()} step before moving forward.`);
-                      return;
-                    }
                     setError(null);
                     setStep(s.key);
                   }}
@@ -707,8 +732,8 @@ export function JobSeekerProfilePage() {
             </div>
             <ProgressBar value={completion} />
             {!stepDone[step] ? (
-              <span className="inline-flex w-fit items-center rounded-full border border-[rgba(234,88,12,0.3)] bg-[rgba(234,88,12,0.1)] px-3 py-1 text-xs text-[#EA580C]">
-                Complete required fields to continue
+              <span className="inline-flex w-fit items-center rounded-full border border-[rgba(26,115,232,0.25)] bg-[rgba(26,115,232,0.1)] px-3 py-1 text-xs text-[#8AB4F8]">
+                Optional: complete this section to improve profile completion
               </span>
             ) : null}
             <div className="flex flex-wrap items-center justify-between gap-4">
@@ -1182,14 +1207,11 @@ export function JobSeekerProfilePage() {
                   <div className="field">
                     <label className="label">Template</label>
                     <select className="select" value={resumeTemplate} onChange={(e) => setResumeTemplate(e.target.value as ResumeTemplate)}>
-                      <option value="ATS_PLAIN">ATS Optimized (Plain)</option>
-                      <option value="TECH_FOCUSED">Tech-Focused</option>
-                      <option value="EXECUTIVE">Executive</option>
-                      <option value="STARTUP">Startup / Product</option>
-                      <option value="ACADEMIC">Academic</option>
-                      <option value="MODERN">ATS Modern (legacy)</option>
-                      <option value="CLASSIC">Professional (legacy)</option>
-                      <option value="MINIMAL">Technical (legacy)</option>
+                      {templateCatalog.map((meta) => (
+                        <option key={meta.id} value={meta.id}>
+                          {meta.label}
+                        </option>
+                      ))}
                     </select>
                   </div>
                   <div className="field">
@@ -1207,8 +1229,11 @@ export function JobSeekerProfilePage() {
                   <button type="button" className="btn btn-primary" onClick={() => void generateResumeVersion()}>
                     Generate resume
                   </button>
+                  <Link to="/job-seeker/resume-builder" className="btn">
+                    Open resume builder
+                  </Link>
                   <div className="muted" style={{ fontSize: 12, alignSelf: "center" }}>
-                    Tip: add a strong About + 5+ skills for best output.
+                    Generate here quickly, or open Resume Builder for advanced editing and downloads.
                   </div>
                 </div>
 
@@ -1426,7 +1451,7 @@ function EducationSection({
 
   function add() {
     const next: EducationItem = {
-      id: uid("edu"),
+      id: globalThis.crypto?.randomUUID?.() ?? uid("edu"),
       level: "BACHELOR",
       institution: "",
       degree: "",
@@ -1603,7 +1628,7 @@ function ExperienceSection({
 
   function add() {
     const next: ExperienceItem = {
-      id: uid("exp"),
+      id: globalThis.crypto?.randomUUID?.() ?? uid("exp"),
       company: "",
       title: "",
       location: null,
@@ -1744,7 +1769,7 @@ function ProjectsSection({
 
   function add() {
     const next: ProjectItem = {
-      id: uid("prj"),
+      id: globalThis.crypto?.randomUUID?.() ?? uid("prj"),
       name: "",
       link: null,
       summary: "",
@@ -1809,17 +1834,17 @@ function ProjectsSection({
                       />
                     </div>
                     <div className="field">
-                      <label className="label">Link</label>
+                      <label className="label">GitHub link</label>
                       <input
                         className="input"
                         value={it.link ?? ""}
                         onChange={(e) => onChange(items.map((x) => (x.id === it.id ? { ...x, link: e.target.value || null } : x)))}
-                        placeholder="Optional (GitHub / live demo)"
+                        placeholder="Optional"
                       />
                     </div>
                   </div>
                   <div className="field">
-                    <label className="label">Summary</label>
+                    <label className="label">Description</label>
                     <textarea
                       className="input"
                       style={{ minHeight: 90, resize: "vertical" }}
@@ -1829,7 +1854,7 @@ function ProjectsSection({
                     />
                   </div>
                   <div className="field">
-                    <label className="label">Project skills</label>
+                    <label className="label">Technologies</label>
                     <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                       {it.skills.map((s) => (
                         <Chip
@@ -1907,7 +1932,7 @@ function CertificationsSection({
 
   function add() {
     const next: CertificationItem = {
-      id: uid("crt"),
+      id: globalThis.crypto?.randomUUID?.() ?? uid("crt"),
       name: "",
       issuer: "",
       issuedOn: new Date().toISOString().slice(0, 10),
@@ -2068,7 +2093,7 @@ function AchievementsSection({
 
   function add() {
     const next: AchievementItem = {
-      id: uid("ach"),
+      id: globalThis.crypto?.randomUUID?.() ?? uid("ach"),
       title: "",
       description: "",
       date: null,

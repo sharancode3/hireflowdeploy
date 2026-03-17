@@ -211,7 +211,22 @@ export type ResumeTemplate =
   | "ACADEMIC"
   | "MODERN"
   | "CLASSIC"
-  | "MINIMAL";
+  | "MINIMAL"
+  | "EDITORIAL_SIDEBAR"
+  | "FORMAL_CENTERED"
+  | "PASTEL_PROFILE"
+  | "FRONTEND_ENGINEER"
+  | "BACKEND_ENGINEER"
+  | "FULL_STACK_ENGINEER"
+  | "DEVOPS_ENGINEER"
+  | "DATA_SCIENTIST"
+  | "DATA_ANALYST"
+  | "PRODUCT_MANAGER"
+  | "UI_UX_DESIGNER"
+  | "QA_AUTOMATION_ENGINEER"
+  | "MOBILE_DEVELOPER"
+  | "CYBERSECURITY_ANALYST"
+  | "MARKETING_SPECIALIST";
 
 export type ResumeSnapshot = {
   photoDataUrl?: string | null;
